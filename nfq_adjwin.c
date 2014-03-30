@@ -19,8 +19,6 @@
 #include <linux/ip.h>
 #include <string.h>
 
-__u16 fixedValue = 100;
-
 static int cb(
 	      struct nfq_q_handle *qh,    /* The queue hable returened by nfq_create_queue */
 	      struct nfgenmsg *nfmsg,     /* message object that contains the packet */
@@ -40,6 +38,10 @@ static int cb(
   struct tcphdr *tcph;
   struct iphdr *iph;
 
+  __u16 winSize = *((__u16*)data);
+  /* default value is 200*/
+  if(!winSize) winSize = 200; 
+  printf ("%d\n", winSize);
   ph = nfq_get_msg_packet_hdr(nfa);
   if(ph){
     id = ntohl(ph->packet_id);
@@ -53,7 +55,7 @@ static int cb(
   if(tcph){
     /* nfq_ip_snprintf(buf, PATH_MAX, iph); */
     /* printf("IP: %s\n", buf); */
-    tcph->window = fixedValue;/*Test!!!*/
+    tcph->window = winSize;/* type is __u16*/
 
     nfq_ip_set_checksum(iph);
     nfq_tcp_compute_checksum_ipv4(tcph, iph);
@@ -78,7 +80,8 @@ int main(int argc, char **argv)
 	int fd;
 	int rv;
 	char buf[4096] __attribute__ ((aligned));
-    if(argc >= 2) fixedValue = (__u16)(atoi(argv[1]));
+    __u16 fixedValue;
+    if (argc >= 2) fixedValue = (__u16)(atoi(argv[1]));
 	printf("opening library handle\n");
 	h = nfq_open();
 	if (!h) {
@@ -99,7 +102,8 @@ int main(int argc, char **argv)
 	}
 
 	printf("binding this socket to queue '0'\n");
-	qh = nfq_create_queue(h,  0, &cb, NULL);
+    /* insert fixed value here */
+	qh = nfq_create_queue(h,  0, &cb, (void*)fixedValue);
 	if (!qh) {
 		fprintf(stderr, "error during nfq_create_queue()\n");
 		exit(1);
