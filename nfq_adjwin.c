@@ -19,58 +19,19 @@
 #include <linux/ip.h>
 #include <string.h>
 
-static int cb(
-	      struct nfq_q_handle *qh,    /* The queue hable returened by nfq_create_queue */
-	      struct nfgenmsg *nfmsg,     /* message object that contains the packet */
-	      struct nfq_data *nfa,       /* Netlink packet data handle*/
-	      void *data                  /* The valued passed to the data parameter of nfq_create_queue */
-	      )
-{
-  char buf[PATH_MAX] __attribute__ ((aligned));
-  
-  u_int32_t id = 0;
-  struct nfqnl_msg_packet_hdr *ph;
+int Total_traffic = 400000; /* The total traffic which passed to the device, default is 4Mbps */
 
-  unsigned char *pdata;
-  int packet_len;
-  
-  struct pkt_buff *pkt;
-  struct tcphdr *tcph;
-  struct iphdr *iph;
+int 
+Get_tcp_num();
 
-  __u16 winSize = *((__u16*)data);
-  /* default value is 200*/
-  if(!winSize) winSize = 200; 
-  printf ("%d\n", winSize);
-  ph = nfq_get_msg_packet_hdr(nfa);
-  if(ph){
-    id = ntohl(ph->packet_id);
-  }
-  packet_len = nfq_get_payload(nfa, &pdata);
-  pkt = pktb_alloc(AF_INET, pdata, packet_len, 0);
-  iph = nfq_ip_get_hdr(pkt);
-  nfq_ip_set_transport_header(pkt, iph);
-  tcph = nfq_tcp_get_hdr(pkt);
+int
+Get_current_traffic();
 
-  if(tcph){
-    /* nfq_ip_snprintf(buf, PATH_MAX, iph); */
-    /* printf("IP: %s\n", buf); */
-    tcph->window = winSize;/* type is __u16*/
+__u16 
+Get_fixed_winsize(int);
 
-    nfq_ip_set_checksum(iph);
-    nfq_tcp_compute_checksum_ipv4(tcph, iph);
-    
-    memcpy(pdata, pktb_data(pkt), packet_len);
-    
-    nfq_tcp_snprintf(buf, PATH_MAX, tcph);
-    printf("TCP: %s\n", buf);
-  } else {
-    printf("%s\n", "NOT TCP");
-  }
-  
-  pktb_free(pkt);
-  return nfq_set_verdict(qh, id, NF_ACCEPT, packet_len, pdata);
-}
+static int 
+cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa, void *data);
 
 int main(int argc, char **argv)
 {
@@ -79,9 +40,11 @@ int main(int argc, char **argv)
 	struct nfnl_handle *nh;
 	int fd;
 	int rv;
+    
 	char buf[4096] __attribute__ ((aligned));
-    __u16 fixedValue;
-    if (argc >= 2) fixedValue = (__u16)(atoi(argv[1]));
+
+    if( argc == 2 ) Total_traffic = atoi(argv[1]); /* get the user specific total traffic value */
+
 	printf("opening library handle\n");
 	h = nfq_open();
 	if (!h) {
@@ -103,7 +66,7 @@ int main(int argc, char **argv)
 
 	printf("binding this socket to queue '0'\n");
     /* insert fixed value here */
-	qh = nfq_create_queue(h,  0, &cb, (void*)fixedValue);
+	qh = nfq_create_queue(h,  0, &cb, (void*)NULL);
 	if (!qh) {
 		fprintf(stderr, "error during nfq_create_queue()\n");
 		exit(1);
@@ -115,6 +78,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
+    /*obtain the file descripter*/
 	fd = nfq_fd(h);
 
 	for (;;) {
@@ -152,4 +116,105 @@ int main(int argc, char **argv)
 	nfq_close(h);
 
 	exit(0);
+}
+
+
+__u16 Get_fixed_winsize(int total_traffic)
+{
+  /*return the fixed windowsize based on the current tcps*/
+  __u16 winSize;
+  int tcpn, ct, raw_datar;
+  tcpn = Get_tcp_num();
+  ct = Get_current_traffic();
+  raw_datar = (total_traffic - ct)/tcpn;
+  winSize = raw_datar / 30000;
+  
+  return 200;
+}
+
+
+int Get_current_traffic()
+{
+  return 300;
+}
+
+int Get_tcp_num()
+{
+  /* Get the number of all current tcps*/
+  FILE * stream;
+  char buf[1024];
+  int tcpnum;
+  
+  bzero(buf, sizeof(buf));
+  /*Using linux commend line to get tcps number*/
+  stream = popen("netstat -nat | wc -l", "r");
+  fread(buf, sizeof(char), sizeof(buf), stream);
+  /*the return value is type in but fread is returned string*/
+  tcpnum = atoi(buf);
+
+  /*close the pipeline*/
+  pclose(stream);
+
+  return tcpnum;
+}
+
+
+/*callback, all modification on packet are on this function*/
+static int cb(
+	      struct nfq_q_handle *qh,    /* The queue hable returened by nfq_create_queue */
+	      struct nfgenmsg *nfmsg,     /* message object that contains the packet */
+	      struct nfq_data *nfa,       /* Netlink packet data handle*/
+	      void *data                  /* The valued passed to the data parameter of nfq_create_queue */
+	      )
+{
+  char buf[PATH_MAX] __attribute__ ((aligned));
+  
+  u_int32_t id = 0;
+  struct nfqnl_msg_packet_hdr *ph;
+
+  unsigned char *pdata;
+  int packet_len;
+  
+  struct pkt_buff *pkt;
+  struct tcphdr *tcph;
+  struct iphdr *iph;
+
+  /* default value is 200*/
+  __u16 winSize = Get_fixed_winsize(Total_traffic);
+  /*printf ("%d\n", winSize);*/
+  
+  /*get header of data*/
+  ph = nfq_get_msg_packet_hdr(nfa);
+  if(ph){
+    id = ntohl(ph->packet_id);
+  }
+  /* pdata point to the payload of packet i.e. the data of packet*/
+  packet_len = nfq_get_payload(nfa, &pdata);
+  /*
+    alloc a space to save the copied data then copy the data to it
+  */
+  pkt = pktb_alloc(AF_INET, pdata, packet_len, 0);
+  iph = nfq_ip_get_hdr(pkt);
+  nfq_ip_set_transport_header(pkt, iph);
+  tcph = nfq_tcp_get_hdr(pkt);
+
+  if(tcph){
+    /* nfq_ip_snprintf(buf, PATH_MAX, iph); */
+    /* printf("IP: %s\n", buf); */
+    tcph->window = winSize;/* type is __u16*/
+
+    /*Header is changed so we need to recompute the checksum*/
+    nfq_ip_set_checksum(iph);
+    nfq_tcp_compute_checksum_ipv4(tcph, iph);
+    /*copy the new checksum to the apropriate position*/
+    memcpy(pdata, pktb_data(pkt), packet_len);
+    
+    nfq_tcp_snprintf(buf, PATH_MAX, tcph);
+    printf("TCP: %s\n", buf);
+  } else {
+    printf("%s\n", "NOT TCP");
+  }
+  
+  pktb_free(pkt);
+  return nfq_set_verdict(qh, id, NF_ACCEPT, packet_len, pdata);
 }
